@@ -398,7 +398,7 @@
 (() => {
   const images = {
     player: new Image(), elite: new Image(), viewer: new Image(),
-    boss_rabbit: new Image(), boss_kazeros: new Image(), boss_keyboard: new Image(),
+    boss_rabbit: new Image(), boss_kazeros: new Image(), boss_keyboard: new Image(), boss1: new Image(),
     laser: new Image(), shield: new Image(), thunder: new Image(), aura: new Image(),
     meteor: new Image(), horses: new Image(), heal: new Image(), spear: new Image(),
     cursor: new Image(), inanna: new Image(), azena: new Image(), shandi: new Image(), ninave: new Image()
@@ -449,6 +449,7 @@
   setSrc(images.boss_rabbit, 'https://i.imgur.com/6jDzSMX.png');
   setSrc(images.boss_kazeros, 'https://i.imgur.com/i8M9cui.png');
   setSrc(images.boss_keyboard, 'https://i.imgur.com/yz1pF2w.png');
+  setSrc(images.boss1, 'https://i.imgur.com/PrnO9Ez.png');
   setSrc(images.laser, 'https://i.imgur.com/nMcKBy2.png');
   setSrc(images.shield, 'https://i.imgur.com/ke2y6ir.png');
   setSrc(images.thunder, 'https://i.imgur.com/y6aqnDF.png');
@@ -606,8 +607,12 @@
   let waveDirector = { angle:0, active:0, cooldown:4.5 };
   let bgm = null, bgmStarted = false, bgmSourceIndex = 0, bgmErrorShown = false;
   let hitSfxPool = [], hitSfxSourceIndex = 0, hitSfxErrorShown = false, lastHitSfxAt = 0, hitSfxReady = false;
+  let actionBarDirty = true, lastActionBarSignature = '', minimapTick = 0, dropMergeTick = 0;
 
   const KEYS = new Set();
+  function clearInputState(){
+    KEYS.clear();
+  }
   const mouse = { sx:canvas.width/2, sy:canvas.height/2, wx:0, wy:0, cx:0, cy:0 };
 
   const player = {
@@ -849,7 +854,15 @@
 
   function ensureAdminAccess(){
     if(adminUnlocked) return true;
-    const input = window.prompt('관리자 비밀번호를 입력하세요.');
+    clearInputState();
+    let input = null;
+    try {
+      input = window.prompt('관리자 비밀번호를 입력하세요.');
+    } finally {
+      clearInputState();
+      setTimeout(clearInputState, 0);
+      try { window.focus(); } catch (e) {}
+    }
     if(input === ADMIN_PASSWORD){
       adminUnlocked = true;
       toast('관리자 모드 잠금 해제', 'good');
@@ -951,7 +964,20 @@
     }
   }
 
+  function getActionBarSignature(){
+    return ownedWeapons()
+      .sort((a,b)=>a.id.localeCompare(b.id))
+      .map(w => `${w.id}:${w.lv}`)
+      .join('|') + `__${player.sealedWeapon || ''}__${Math.ceil(player.sealedTimer || 0)}`;
+  }
+
+  function markActionBarDirty(){ actionBarDirty = true; }
+
   function refreshActionBar(){
+    const signature = getActionBarSignature();
+    if(!actionBarDirty && signature === lastActionBarSignature) return;
+    lastActionBarSignature = signature;
+    actionBarDirty = false;
     el.actionBar.innerHTML = '';
     const ws = ownedWeapons().sort((a,b)=>a.id.localeCompare(b.id));
     for(let i=0; i<MAX_WEAPONS; i++){
@@ -1006,16 +1032,57 @@
     if(player.adrenStacks >= 6){ player.adrenStacks = 6; player.adrenBuffTimer = 5.0; toast('아드레날린 폭발!', 'good'); }
   }
 
-  function spawnDmgText(x,y,val,crit){ dmgTexts.push({ x,y,txt:String(Math.floor(val)),ttl:0.6,color:crit?'#fbbf24':'#f8fafc' }); }
-  function spawnFloatText(x,y,txt,color){ dmgTexts.push({ x,y,txt:String(txt),ttl:0.8,color:color||'#f8fafc' }); }
+  function spawnDmgText(x,y,val,crit){ dmgTexts.push({ x,y,txt:String(Math.floor(val)),ttl:0.6,color:crit?'#fbbf24':'#f8fafc' }); if(dmgTexts.length > 180) dmgTexts.splice(0, dmgTexts.length - 180); }
+  function spawnFloatText(x,y,txt,color){ dmgTexts.push({ x,y,txt:String(txt),ttl:0.8,color:color||'#f8fafc' }); if(dmgTexts.length > 180) dmgTexts.splice(0, dmgTexts.length - 180); }
+  function getXpDropRadius(xp){ return clamp(6 + Math.sqrt(Math.max(1, xp)) * 1.35, 6, 18); }
+  function addXpDrop(x, y, xp){
+    const mergeDist = 42;
+    for(let i=drops.length-1, checked=0; i>=0 && checked<56; i--, checked++){
+      const d = drops[i];
+      if(d.isEther) continue;
+      if(Math.hypot(d.x-x, d.y-y) <= mergeDist){
+        d.xp = (d.xp || 0) + xp;
+        d.r = getXpDropRadius(d.xp);
+        d.phase = rand(0, Math.PI*2);
+        d.pulse = rand(0.5, 1.0);
+        return d;
+      }
+    }
+    const orb = { x, y, r:getXpDropRadius(xp), xp, phase:rand(0,Math.PI*2), pulse:rand(0.5,1.0) };
+    drops.push(orb);
+    return orb;
+  }
+  function mergeNearbyXpDrops(limit=18){
+    let merged = 0;
+    for(let i=drops.length-1; i>=0 && merged<limit; i--){
+      const a = drops[i];
+      if(!a || a.isEther) continue;
+      for(let j=i-1; j>=0; j--){
+        const b = drops[j];
+        if(!b || b.isEther) continue;
+        const rr = (a.r || 6) + (b.r || 6) + 14;
+        if(Math.abs(a.x-b.x) > rr || Math.abs(a.y-b.y) > rr) continue;
+        if(Math.hypot(a.x-b.x, a.y-b.y) <= rr){
+          a.x = (a.x * (a.xp || 1) + b.x * (b.xp || 1)) / ((a.xp || 1) + (b.xp || 1));
+          a.y = (a.y * (a.xp || 1) + b.y * (b.xp || 1)) / ((a.xp || 1) + (b.xp || 1));
+          a.xp = (a.xp || 0) + (b.xp || 0);
+          a.r = getXpDropRadius(a.xp);
+          drops.splice(j, 1);
+          merged++;
+          i = Math.min(i, drops.length-1);
+          break;
+        }
+      }
+    }
+  }
 
-  function applyDamageToMob(m, base){
+  function applyDamageToMob(m, base, skipSfx=false){
     let dmg = base * getDmgMult(m.isBoss || m.isElite);
     const crit = Math.random() < (player.critChance + (player.buffs.crit > 0 ? 0.3 : 0));
     if(crit) dmg *= player.critDamage;
     dmg = Math.max(1, Math.floor(dmg));
     m.hp -= dmg;
-    playHitSfx();
+    if(!skipSfx) playHitSfx();
     spawnDmgText(m.x, m.y - m.r, dmg, crit);
     addAdrenStack();
   }
@@ -1066,7 +1133,7 @@
     }
   }
 
-  function spawnMob({ elite=false, boss=false, isDonationBoss=false, nick='시청자', imgType='viewer', angle=null, specificX=null, specificY=null, vx=0, vy=0 }){
+  function spawnMob({ elite=false, boss=false, isDonationBoss=false, nick='시청자', imgType='viewer', angle=null, specificX=null, specificY=null, vx=0, vy=0, hpScale=1, radiusScale=1, speedScale=1, eliteSkillCdScale=1 }){
     let x, y;
     if(specificX !== null && specificY !== null){
       x = specificX; y = specificY;
@@ -1078,17 +1145,17 @@
     }
     const diffMult = getDiffMult();
     const mapHpMult = MAP_HP_MULT[currentMapIndex] || 1;
-    const r = boss || isDonationBoss ? 110 : (elite ? 34 : 22);
+    const r = (boss || isDonationBoss ? 110 : (elite ? 34 : 22)) * radiusScale;
     const baseHp = 10 + stage * 5;
     const hpMul = isDonationBoss ? 18 : (boss ? 60 : elite ? 5 + stage : 1);
-    const mhp = Math.floor(baseHp * diffMult * hpMul * mapHpMult);
-    const spd = (boss || isDonationBoss ? 80 : elite ? 110 : 95) + stage*2;
+    const mhp = Math.floor(baseHp * diffMult * hpMul * mapHpMult * hpScale);
+    const spd = ((boss || isDonationBoss ? 80 : elite ? 110 : 95) + stage*2) * speedScale;
     const mob = {
       x, y, r, spd, hp:mhp, maxHp:mhp,
       isElite: elite, isBoss: boss, isStageBoss: boss && !isDonationBoss, isDonationBoss,
       nick, imgType, dir:0, animTimer:rand(0,1), sayUntil:performance.now()+1800,
       vx, vy, bossType:null,
-      ai: { state:'idle', stateTimer:0, t:0, eliteShotCd: rand(1.8, 3.2), elitePattern: pick(['eliteNeedle','eliteSpread','eliteOrb']), basicTimer:0, basicCount:0 },
+      ai: { state:'idle', stateTimer:0, t:0, eliteShotCd: rand(1.8, 3.2) * eliteSkillCdScale, elitePattern: pick(['eliteNeedle','eliteSpread','eliteOrb']), basicTimer:0, basicCount:0 },
       sayText:'', sayTimer:0, sayAction:null, healCount:0, phantomTimer:0, p50:false, p10:false, orbitTimer:0
     };
     mobs.push(mob);
@@ -1396,6 +1463,7 @@
       }
       else if(obj.imgType === 'boss_kazeros'){ img = images.boss_kazeros; isBossType = true; frameRows = 1; }
       else if(obj.imgType === 'boss_keyboard'){ img = images.boss_keyboard; isBossType = true; frameRows = 1; }
+      else if(obj.imgType === 'boss1'){ img = images.boss1; isBossType = true; frameRows = 1; }
       else if(obj.isElite) img = images.elite;
       else img = images.viewer;
       const frameCol = Math.floor(obj.animTimer / 0.15) % frameCols;
@@ -1777,19 +1845,31 @@
       for(let j=mobs.length-1; j>=0; j--){
         const m = mobs[j];
         if(Math.hypot(b.x-m.x, b.y-m.y) < b.r + m.r && !b.hit?.has(m)){
-          applyDamageToMob(m, b.dmg);
-          if(b.isBasicAttack) aoes.push({ kind:'boom', x:b.x, y:b.y, r:100, ttl:0.25, maxTtl:0.25, dmg:Math.floor(b.dmg * 0.8) });
+          applyDamageToMob(m, b.dmg, !!b.isBasicAttack);
+          if(b.isBasicAttack){
+            if(!b.didPlayHitSfx){ playHitSfx(); b.didPlayHitSfx = true; }
+            aoes.push({ kind:'boom', x:b.x, y:b.y, r:100, ttl:0.25, maxTtl:0.25, dmg:Math.floor(b.dmg * 0.8) });
+          }
           if(b.isRain) aoes.push({ kind:'rainHit', x:m.x, y:m.y, r:30, ttl:0.15 });
           if(b.isHorse){ if(!b.hit) b.hit = new Set(); b.hit.add(m); }
           else {
-            if(b.pierce > 0) b.pierce--;
+            if(b.pierce > 0){
+              b.pierce--;
+              if(!b.hit) b.hit = new Set();
+              b.hit.add(m);
+            }
             else { bullets.splice(i, 1); break; }
           }
         }
       }
     }
 
-    const pickR = 150 * player.pickup;
+    const pickR = 270 * player.pickup;
+    dropMergeTick += dt;
+    if(dropMergeTick >= 0.18){
+      mergeNearbyXpDrops(currentMapIndex === 1 ? 24 : 18);
+      dropMergeTick = 0;
+    }
     for(let i=drops.length-1; i>=0; i--){
       const d = drops[i];
       const dist = Math.hypot(player.x-d.x, player.y-d.y);
@@ -1801,8 +1881,13 @@
           drops.splice(i, 1);
         }
       } else {
-        if(dist < pickR){ const pull = clamp((pickR-dist)/pickR, 0, 1); d.x += (player.x-d.x)/Math.max(1,dist)*800*pull*dt; d.y += (player.y-d.y)/Math.max(1,dist)*800*pull*dt; }
-        if(dist < player.r + d.r){ addXP(d.xp); drops.splice(i, 1); }
+        if(dist < pickR){
+          const pull = clamp((pickR-dist)/pickR, 0.08, 1);
+          const speed = 920 + Math.min(480, (d.xp || 0) * 5);
+          d.x += (player.x-d.x)/Math.max(1,dist)*speed*pull*dt;
+          d.y += (player.y-d.y)/Math.max(1,dist)*speed*pull*dt;
+        }
+        if(dist < player.r + d.r + 12){ addXP(d.xp); drops.splice(i, 1); }
       }
     }
   }
@@ -1818,7 +1903,7 @@
   function castHorse(lv,s){ const ang = Math.atan2(mouse.wy-player.y, mouse.wx-player.x); bullets.push({ x:player.x, y:player.y, vx:Math.cos(ang)*700, vy:Math.sin(ang)*700, r:80, life:2.5, dmg:s.dmg, pierce:999, fromEnemy:false, isHorse:true, ang }); }
 
   function updateWeapons(dt){
-    if(player.sealedWeapon && player.sealedTimer > 0){ player.sealedTimer -= dt; if(player.sealedTimer <= 0){ player.sealedWeapon = null; toast('무기 봉인 해제!', 'good'); } }
+    if(player.sealedWeapon && player.sealedTimer > 0){ player.sealedTimer -= dt; if(player.sealedTimer <= 0){ player.sealedWeapon = null; markActionBarDirty(); toast('무기 봉인 해제!', 'good'); } }
     for(let i=activeBursts.length-1; i>=0; i--){
       const b = activeBursts[i];
       b.t -= dt;
@@ -2080,7 +2165,7 @@
               if(m.healCount < 10){ m.healCount++; m.hp = Math.min(m.maxHp, m.hp + m.maxHp*0.1); }
             } else if(m.sayAction === 'seal'){
               const ws = ownedWeapons();
-              if(ws.length > 0){ player.sealedWeapon = pick(ws).id; player.sealedTimer = 30.0; }
+              if(ws.length > 0){ player.sealedWeapon = pick(ws).id; player.sealedTimer = 30.0; markActionBarDirty(); }
             }
             m.sayAction = null;
             m.sayText = '';
@@ -2119,7 +2204,7 @@
         let xp = 2, cnt = 1;
         if(m.isBoss || m.isDonationBoss){ xp = 20; cnt = 6; }
         else if(m.isElite){ xp = 8; cnt = 2; }
-        for(let k=0; k<cnt; k++) drops.push({ x:m.x+rand(-10,10), y:m.y+rand(-10,10), r:6, xp, phase:rand(0,Math.PI*2), pulse:rand(0.5,1.0) });
+        for(let k=0; k<cnt; k++) addXpDrop(m.x+rand(-10,10), m.y+rand(-10,10), xp);
         killCount++;
         mobs.splice(i, 1);
         if(m === stageBoss){ stageBoss = null; triggerBossDeathFx(m.x, m.y); completeStage(); }
@@ -2141,18 +2226,54 @@
       waveDirector.cooldown = map2 ? rand(1.15, 2.1) : rand(2.0, 3.4);
     }
     const isWaveWindow = waveDirector.active > 0;
-    let spawnMultiplier = 0.24;
-    let eliteChance = 0.01;
-    if(elapsed < 14){ spawnMultiplier = isWaveWindow ? (map2 ? 1.2 : 0.84) : 0.12; eliteChance = 0.00; }
-    else if(elapsed < 32){ spawnMultiplier = isWaveWindow ? (map2 ? 1.95 : 1.45) : (map2 ? 0.26 : 0.18); eliteChance = isWaveWindow ? (map2 ? 0.07 : 0.04) : 0.01; }
-    else if(elapsed < 52){ spawnMultiplier = isWaveWindow ? (map2 ? 2.85 : 2.25) : (map2 ? 0.34 : 0.24); eliteChance = isWaveWindow ? (map2 ? 0.12 : 0.08) : (map2 ? 0.04 : 0.02); }
-    else { spawnMultiplier = isWaveWindow ? (map2 ? 3.4 : 2.75) : (map2 ? 0.46 : 0.3); eliteChance = isWaveWindow ? (map2 ? 0.17 : 0.12) : (map2 ? 0.06 : 0.03); }
-    spawnBudget += dt * (map2 ? (8.6 + stage * 2.7) : (6.9 + stage * 2.2)) * spawnMultiplier;
-    while(spawnBudget >= 1 && mobs.length < (currentMapIndex === 1 ? 320 : 280)){
+    let spawnMultiplier = 0.22;
+    let eliteChance = 0.02;
+    let eliteHpScale = 1.0;
+    let eliteRadiusScale = 1.0;
+    let eliteSpeedScale = 1.0;
+    let eliteSkillCdScale = 1.0;
+    if(elapsed < 14){
+      spawnMultiplier = isWaveWindow ? (map2 ? 0.88 : 0.64) : 0.11;
+      eliteChance = isWaveWindow ? (map2 ? 0.16 : 0.10) : 0.01;
+      eliteHpScale = isWaveWindow ? (map2 ? 2.3 : 1.9) : 1.0;
+    }
+    else if(elapsed < 32){
+      spawnMultiplier = isWaveWindow ? (map2 ? 1.32 : 1.02) : (map2 ? 0.24 : 0.17);
+      eliteChance = isWaveWindow ? (map2 ? 0.34 : 0.26) : 0.04;
+      eliteHpScale = isWaveWindow ? (map2 ? 3.1 : 2.5) : 1.15;
+      eliteRadiusScale = isWaveWindow ? 1.05 : 1.0;
+    }
+    else if(elapsed < 52){
+      spawnMultiplier = isWaveWindow ? (map2 ? 1.86 : 1.42) : (map2 ? 0.31 : 0.23);
+      eliteChance = isWaveWindow ? (map2 ? 0.48 : 0.38) : (map2 ? 0.10 : 0.08);
+      eliteHpScale = isWaveWindow ? (map2 ? 4.1 : 3.3) : 1.25;
+      eliteRadiusScale = isWaveWindow ? 1.08 : 1.0;
+      eliteSkillCdScale = isWaveWindow ? 0.92 : 1.0;
+    }
+    else {
+      spawnMultiplier = isWaveWindow ? (map2 ? 2.16 : 1.62) : (map2 ? 0.4 : 0.28);
+      eliteChance = isWaveWindow ? (map2 ? 0.62 : 0.52) : (map2 ? 0.16 : 0.12);
+      eliteHpScale = isWaveWindow ? (map2 ? 5.2 : 4.1) : 1.4;
+      eliteRadiusScale = isWaveWindow ? 1.12 : 1.02;
+      eliteSpeedScale = isWaveWindow ? 0.96 : 1.0;
+      eliteSkillCdScale = isWaveWindow ? 0.86 : 1.0;
+    }
+    spawnBudget += dt * (map2 ? (8.1 + stage * 2.55) : (6.4 + stage * 2.05)) * spawnMultiplier;
+    while(spawnBudget >= 1 && mobs.length < (currentMapIndex === 1 ? 220 : 180) && bullets.length < 260 && aoes.length < 160){
       spawnBudget -= 1;
       const spawnAngle = isWaveWindow ? waveDirector.angle + rand(-0.42, 0.42) : null;
       const makeElite = Math.random() < eliteChance;
-      spawnMob({ elite:makeElite, nick:'시청자', imgType:'viewer', angle:spawnAngle });
+      const useBoss1Elite = map2 && makeElite;
+      spawnMob({
+        elite:makeElite,
+        nick: useBoss1Elite ? '강화 악플러' : '시청자',
+        imgType: useBoss1Elite ? 'boss1' : 'viewer',
+        angle:spawnAngle,
+        hpScale: makeElite ? eliteHpScale * (useBoss1Elite ? 1.22 : 1) : 1,
+        radiusScale: makeElite ? eliteRadiusScale * (useBoss1Elite ? 1.08 : 1) : 1,
+        speedScale: makeElite ? eliteSpeedScale * (useBoss1Elite ? 0.96 : 1) : 1,
+        eliteSkillCdScale: makeElite ? eliteSkillCdScale : 1
+      });
     }
   }
 
@@ -2183,12 +2304,12 @@
     if(pool.length === 0){ closeRoulette(); return; }
     el.rStrip.innerHTML = '';
     rPool = [];
-    for(let i=0; i<800; i++){
+    for(let i=0; i<500; i++){
       const c = pick(pool); rPool.push(c);
       const imgSrc = c.kind==='weapon' ? weaponDef(c.id).iconImg : passiveDef(c.id).iconImg;
       const div = document.createElement('div'); div.className = 'r-item'; div.innerHTML = `<img src="${imgSrc}">`; el.rStrip.appendChild(div);
     }
-    rStripX = 0; rVelocity = 15; rState = 'spinning';
+    rStripX = 0; rVelocity = 28; rState = 'spinning';
     el.btnStopRoulette.style.display = 'inline-block'; el.btnClaimRoulette.style.display = 'none';
     el.rName.textContent = '???'; el.rDesc.innerHTML = '버튼을 눌러 룰렛을 멈추세요!';
     tickRoulette();
@@ -2198,8 +2319,8 @@
     if(rState === 'stopped') return;
     if(rState === 'spinning') rStripX -= rVelocity;
     else if(rState === 'stopping'){
-      rStripX += (rTargetX - rStripX) * 0.05;
-      if(Math.abs(rTargetX - rStripX) < 1){
+      rStripX += (rTargetX - rStripX) * 0.14;
+      if(Math.abs(rTargetX - rStripX) < 2.5){
         rStripX = rTargetX; rState = 'stopped';
         const c = rWinnerItem;
         const name = c.kind === 'weapon' ? weaponDef(c.id).name : passiveDef(c.id).name;
@@ -2231,7 +2352,7 @@
       card.onclick = () => {
         if(c.kind === 'weapon') weaponLv.set(c.id, cur+1);
         else { passiveLv.set(c.id, cur+1); passiveOn.add(c.id); }
-        refreshActionBar(); refreshPassiveBar();
+        markActionBarDirty(); refreshActionBar(); refreshPassiveBar();
         closeShopModal(); beginStageBreakThenProceed();
       };
       el.shopCards.appendChild(card);
@@ -2303,13 +2424,13 @@
     stage++;
     if(currentMapIndex === 0 && stage > 4){
       currentMapIndex = 1; stage = 1; WORLD_W = MAPS[1].w; WORLD_H = MAPS[1].h; player.x = WORLD_W/2; player.y = WORLD_H/2;
-      weaponLv.clear(); passiveLv.clear(); passiveOn.clear(); wTimers.clear(); refreshActionBar(); refreshPassiveBar(); toast('다음 맵으로 이동', 'good');
+      weaponLv.clear(); passiveLv.clear(); passiveOn.clear(); wTimers.clear(); markActionBarDirty(); refreshActionBar(); refreshPassiveBar(); toast('다음 맵으로 이동', 'good');
     } else if(currentMapIndex === 1 && stage > 5){
       showEnding();
       return;
     }
     phase = 'RUN'; stageRemain = STAGE_DURATION; player.hp = clamp(player.hp + Math.floor(player.maxHp*0.25), 1, player.maxHp);
-    bullets.length = 0; beams.length = 0; aoes.length = 0; drops.length = 0; mobs.length = 0; activeBursts.length = 0; spawnBudget = 0; waveDirector.active = 0; waveDirector.cooldown = 2.5;
+    bullets.length = 0; beams.length = 0; aoes.length = 0; drops.length = 0; mobs.length = 0; activeBursts.length = 0; spawnBudget = 0; waveDirector.active = 0; waveDirector.cooldown = 2.5; dropMergeTick = 0;
     bossFight = ((currentMapIndex === 0 && stage === 4) || (currentMapIndex === 1 && (stage === 4 || stage === 5)));
     if(bossFight) spawnStageBoss();
   }
@@ -2318,13 +2439,13 @@
     clearTimeout(stageTransitionTimer);
     started = false; paused = false; modalOpen = false; gameOver = false; bossFight = false; phase = 'MENU';
     currentMapIndex = 0; stage = 1; WORLD_W = MAPS[0].w; WORLD_H = MAPS[0].h; stageRemain = STAGE_DURATION;
-    camX = 0; camY = 0; killCount = 0; shakeTime = 0; shakeIntensity = 0; stageBoss = null; spawnBudget = 0; waveDirector.active = 0; waveDirector.cooldown = 4.5;
+    camX = 0; camY = 0; killCount = 0; shakeTime = 0; shakeIntensity = 0; stageBoss = null; spawnBudget = 0; waveDirector.active = 0; waveDirector.cooldown = 4.5; minimapTick = 0; dropMergeTick = 0;
     mobs.length = 0; bullets.length = 0; aoes.length = 0; drops.length = 0; beams.length = 0; dmgTexts.length = 0; activeBursts.length = 0; effects.length = 0;
     weaponLv.clear(); passiveLv.clear(); passiveOn.clear(); wTimers.clear();
     player.x = WORLD_W/2; player.y = WORLD_H/2; player.hp = 100; player.maxHp = 100; player.shield = 0; player.level = 1; player.xp = 0; player.xpNeed = 30; player.revive = 0; player.reroll = 1; player.dmg = 10; player.atkSpeed = 1.0; player.pickup = 1.1; player.adrenStacks = 0; player.adrenBuffTimer = 0; player.frozenTimer = 0; player.blindTimer = 0; player.sealedWeapon = null; player.sealedTimer = 0; player.trail.length = 0;
     esther.charges = 0; esther.inannaTimer = 0; esther.azenaTimer = 0; esther.azenaTick = 0; esther.shandiTimer = 0; esther.chargeProgress = 0; adminUnlocked = false; bgmErrorShown = false; updateEstherUI();
     el.hud.style.display = 'none'; el.bossRow.style.display = 'none'; el.gameOver.classList.remove('show'); el.endingOverlay.classList.remove('show'); el.stageOverlay.classList.remove('show'); el.mainMenu.style.display = 'flex'; el.mainMenu.classList.add('show'); document.body.classList.remove('in-game');
-    refreshActionBar(); refreshPassiveBar();
+    markActionBarDirty(); refreshActionBar(); refreshPassiveBar();
   }
 
 
@@ -2385,7 +2506,16 @@
       updateMobs(dt);
     }
 
-    if(started){ updateHUD(); updateBossCastUI(); refreshActionBar(); drawMinimap(); }
+    if(started){
+      updateHUD();
+      updateBossCastUI();
+      markActionBarDirty(); refreshActionBar();
+      minimapTick += dt;
+      if(minimapTick >= 0.12){
+        drawMinimap();
+        minimapTick = 0;
+      }
+    }
     draw();
 
     console.assert(!!document.getElementById('gameCanvas'), 'gameCanvas should exist');
@@ -2416,7 +2546,7 @@
     if(rState !== 'spinning') return;
     rState = 'stopping';
     let currentIndex = Math.floor(Math.abs(rStripX) / rItemW);
-    let winnerIndex = currentIndex + 5;
+    let winnerIndex = currentIndex + 3;
     if(winnerIndex >= rPool.length - 1) winnerIndex = rPool.length - 2;
     rWinnerItem = rPool[winnerIndex];
     rTargetX = 130 - (winnerIndex * rItemW);
@@ -2426,12 +2556,12 @@
     const c = rWinnerItem;
     if(c.kind === 'weapon') weaponLv.set(c.id, (weaponLv.get(c.id)||0) + 1);
     else { passiveLv.set(c.id, (passiveLv.get(c.id)||0) + 1); passiveOn.add(c.id); }
-    refreshActionBar(); refreshPassiveBar(); closeRoulette();
+    markActionBarDirty(); refreshActionBar(); refreshPassiveBar(); closeRoulette();
     if(isInitialPick) startCountdown();
   };
 
   el.btnShopSkip.onclick = () => { closeShopModal(); beginStageBreakThenProceed(); };
-  el.btnDevGive.onclick = () => { if(!ensureAdminAccess()) return; weaponLv.set('W8_METEOR',8); weaponLv.set('W9_HORSE',8); passiveOn.add('P5_ADREN'); passiveLv.set('P5_ADREN',5); passiveOn.add('P8_ETHER'); passiveLv.set('P8_ETHER',5); refreshActionBar(); refreshPassiveBar(); toast('개발자 치트 활성화', 'good'); };
+  el.btnDevGive.onclick = () => { if(!ensureAdminAccess()) return; weaponLv.set('W8_METEOR',8); weaponLv.set('W9_HORSE',8); passiveOn.add('P5_ADREN'); passiveLv.set('P5_ADREN',5); passiveOn.add('P8_ETHER'); passiveLv.set('P8_ETHER',5); markActionBarDirty(); refreshActionBar(); refreshPassiveBar(); toast('개발자 치트 활성화', 'good'); };
   el.btnDevEsther.onclick = () => { if(!ensureAdminAccess()) return; esther.charges = 2; esther.chargeProgress = 0; updateEstherUI(); toast('에스더 스킬 최대 충전됨', 'good'); };
   el.btnDevNextStage.onclick = () => { if(!ensureAdminAccess()) return; if(started && !bossFight){ stageRemain = 0; mobs.forEach(m=>m.hp=0); } };
   el.btnDevNextMap.onclick = () => { if(!ensureAdminAccess()) return; if(started){ currentMapIndex = Math.min(1, currentMapIndex + 1); stage = 0; WORLD_W = MAPS[currentMapIndex].w; WORLD_H = MAPS[currentMapIndex].h; proceedToNextStage(); } };
@@ -2455,17 +2585,23 @@
     }
   });
   window.addEventListener('keyup', (e) => KEYS.delete(e.key.toLowerCase()));
+  window.addEventListener('blur', clearInputState);
+  window.addEventListener('focus', () => setTimeout(clearInputState, 0));
+  document.addEventListener('visibilitychange', () => { if(document.hidden) clearInputState(); });
   window.addEventListener('mousemove', (e) => {
     mouse.cx = e.clientX; mouse.cy = e.clientY;
     const rect = canvas.getBoundingClientRect();
     const scaleX = canvas.width / rect.width, scaleY = canvas.height / rect.height;
     mouse.sx = (e.clientX - rect.left) * scaleX;
     mouse.sy = (e.clientY - rect.top) * scaleY;
-    if(started && !paused && !modalOpen && !gameOver){ cursorDusts.push({ x:mouse.cx+rand(-5,10), y:mouse.cy+rand(10,20), vx:rand(-0.5,0.5), vy:rand(0.5,2), life:1, r:rand(1.5,3.5), color:'#fbbf24' }); }
+    if(started && !paused && !modalOpen && !gameOver){
+      cursorDusts.push({ x:mouse.cx+rand(-5,10), y:mouse.cy+rand(10,20), vx:rand(-0.5,0.5), vy:rand(0.5,2), life:1, r:rand(1.5,3.5), color:'#fbbf24' });
+      if(cursorDusts.length > 90) cursorDusts.splice(0, cursorDusts.length - 90);
+    }
   });
 
 
-  refreshActionBar();
+  markActionBarDirty(); refreshActionBar();
   refreshPassiveBar();
   updateEstherUI();
   updateBgmUI();
