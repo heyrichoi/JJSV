@@ -587,6 +587,11 @@
     './JJ LAND.mp3'
   ];
   const DEFAULT_BGM_VOLUME = 0.55;
+  const HIT_SFX_URLS = [
+    './Punch_sound_effect02-1s.wav',
+    'https://github.com/heyrichoi/JJSV/raw/refs/heads/main/Punch_sound_effect02-1s.wav'
+  ];
+  const DEFAULT_HIT_SFX_VOLUME = 0.12;
   const MAP_HP_MULT = [2.15, 2.45];
 
   let started = false, paused = false, modalOpen = false, gameOver = false, showStats = false;
@@ -600,6 +605,7 @@
   let cursorDusts = [];
   let waveDirector = { angle:0, active:0, cooldown:4.5 };
   let bgm = null, bgmStarted = false, bgmSourceIndex = 0, bgmErrorShown = false;
+  let hitSfxPool = [], hitSfxSourceIndex = 0, hitSfxErrorShown = false, lastHitSfxAt = 0, hitSfxReady = false;
 
   const KEYS = new Set();
   const mouse = { sx:canvas.width/2, sy:canvas.height/2, wx:0, wy:0, cx:0, cy:0 };
@@ -784,6 +790,63 @@
     updateBgmUI();
   }
 
+  function createHitAudio(src){
+    const a = document.createElement('audio');
+    a.preload = 'auto';
+    a.playsInline = true;
+    a.volume = DEFAULT_HIT_SFX_VOLUME;
+    a.src = src;
+    a.addEventListener('error', () => {
+      if(hitSfxSourceIndex < HIT_SFX_URLS.length - 1){
+        hitSfxSourceIndex += 1;
+        loadHitSfxSource(hitSfxSourceIndex);
+        return;
+      }
+      if(!hitSfxErrorShown){
+        hitSfxErrorShown = true;
+        toast('타격음 파일을 찾지 못했습니다. HTML 파일과 같은 폴더에 "Punch_sound_effect02-1s.wav"를 넣어주세요.', 'bad');
+      }
+    });
+    return a;
+  }
+
+  function loadHitSfxSource(index=0){
+    hitSfxSourceIndex = index;
+    const src = HIT_SFX_URLS[index];
+    hitSfxPool.forEach(a => {
+      a.src = src;
+      a.load();
+    });
+  }
+
+  function ensureHitSfx(){
+    if(hitSfxPool.length) return hitSfxPool;
+    hitSfxPool = Array.from({ length: 6 }, () => createHitAudio(HIT_SFX_URLS[0]));
+    loadHitSfxSource(0);
+    return hitSfxPool;
+  }
+
+  function armHitSfx(){
+    if(hitSfxReady) return;
+    ensureHitSfx();
+    hitSfxReady = true;
+  }
+
+  function playHitSfx(){
+    if(!hitSfxReady) return;
+    const now = performance.now();
+    if(now - lastHitSfxAt < 45) return;
+    lastHitSfxAt = now;
+    const pool = ensureHitSfx();
+    const audio = pool.find(a => a.paused || a.ended) || pool[0];
+    try {
+      audio.currentTime = 0;
+      audio.volume = DEFAULT_HIT_SFX_VOLUME;
+      const p = audio.play();
+      if(p && typeof p.catch === 'function') p.catch(() => {});
+    } catch (e) {}
+  }
+
   function ensureAdminAccess(){
     if(adminUnlocked) return true;
     const input = window.prompt('관리자 비밀번호를 입력하세요.');
@@ -952,6 +1015,7 @@
     if(crit) dmg *= player.critDamage;
     dmg = Math.max(1, Math.floor(dmg));
     m.hp -= dmg;
+    playHitSfx();
     spawnDmgText(m.x, m.y - m.r, dmg, crit);
     addAdrenStack();
   }
@@ -2333,14 +2397,14 @@
   }
 
   updateBgmUI();
-  const bootBgm = () => { if(!bgmStarted) startBgm(true); };
+  const bootBgm = () => { armHitSfx(); if(!bgmStarted) startBgm(true); };
   window.addEventListener('pointerdown', bootBgm, { once:true });
   window.addEventListener('keydown', bootBgm, { once:true });
 
-  el.btnNew.onclick = () => { startBgm(true); el.mainMenu.style.display = 'none'; openRoulette(true); updateEstherUI(); };
-  el.btnHow.onclick = () => { startBgm(); el.help.style.display = 'flex'; };
+  el.btnNew.onclick = () => { armHitSfx(); startBgm(true); el.mainMenu.style.display = 'none'; openRoulette(true); updateEstherUI(); };
+  el.btnHow.onclick = () => { armHitSfx(); startBgm(); el.help.style.display = 'flex'; };
   el.btnHelpClose.onclick = () => { el.help.style.display = 'none'; };
-  el.btnSettings.onclick = () => { startBgm(); el.settings.style.display = 'flex'; };
+  el.btnSettings.onclick = () => { armHitSfx(); startBgm(); el.settings.style.display = 'flex'; };
   el.btnSettingsClose.onclick = () => { el.settings.style.display = 'none'; };
   el.btnFullscreen.onclick = () => { if(!document.fullscreenElement) document.documentElement.requestFullscreen().catch(()=>{}); else document.exitFullscreen?.(); };
   if(el.btnBgmToggle) el.btnBgmToggle.onclick = () => toggleBgm();
