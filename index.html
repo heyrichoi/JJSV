@@ -583,8 +583,8 @@
   const ZOOM = 1.35;
   const STAGE_DURATION = 85;
   const BGM_URLS = [
-    'https://github.com/heyrichoi/JJSV/raw/refs/heads/main/JJ%20LAND.mp3',
-    'https://github.com/heyrichoi/JJSV/raw/refs/heads/main/JJ%20LAND.mp3'
+    './JJ%20LAND.mp3',
+    './JJ LAND.mp3'
   ];
   const DEFAULT_BGM_VOLUME = 0.55;
   const MAP_HP_MULT = [2.15, 2.45];
@@ -722,7 +722,6 @@
     bgm = document.createElement('audio');
     bgm.loop = true;
     bgm.preload = 'auto';
-    bgm.crossOrigin = 'anonymous';
     bgm.playsInline = true;
     bgm.volume = ((Number(el.bgmVolume?.value) || Math.round(DEFAULT_BGM_VOLUME * 100)) / 100);
     bgm.addEventListener('ended', () => {
@@ -738,7 +737,7 @@
       }
       if(!bgmErrorShown){
         bgmErrorShown = true;
-        toast('배경음 파일을 불러오지 못했습니다. 네트워크 상태를 확인해 주세요.', 'bad');
+        toast('배경음 파일을 찾지 못했습니다. HTML 파일과 같은 폴더에 "JJ LAND.mp3"를 넣어주세요.', 'bad');
       }
       updateBgmUI();
     });
@@ -762,7 +761,7 @@
       bgmStarted = true;
     } catch (e) {
       if(force && !bgmErrorShown){
-        toast('배경음이 아직 준비되지 않았습니다. 설정에서 다시 재생을 눌러주세요.', 'bad');
+        toast('배경음 재생이 막혔습니다. START를 누른 뒤 설정에서 다시 재생을 눌러주세요.', 'bad');
       }
     }
     updateBgmUI();
